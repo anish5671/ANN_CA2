@@ -192,10 +192,10 @@ elif menu == "Model Training":
             X = df.drop(target, axis=1)
             y = df[target]
 
-            # 🔥 FINAL PIPELINE (FIXED)
+           
             X = drop_text_columns(X)
             X = encode_data(X)
-            X = handle_missing(X)   # <-- fixes NaN error
+            X = handle_missing(X)  
             X = scale_features(X)
 
             st.write("Remaining Missing Values:", X.isnull().sum().sum())
