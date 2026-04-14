@@ -3,225 +3,197 @@ import pandas as pd
 import numpy as np
 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.metrics import accuracy_score
-from sklearn.impute import SimpleImputer
-
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
 
 import plotly.express as px
 
-
-# ---------------- UI ----------------
 st.set_page_config(page_title="ML Pipeline", layout="wide")
-st.title("🚀 Machine Learning Pipeline Dashboard")
 
-menu = st.sidebar.radio("Navigation", [
-    "Upload Data",
-    "EDA",
-    "Preprocessing",
-    "Model Training"
-])
+st.title("ML Auto Pipeline")
+
+menu = st.sidebar.radio("Menu", ["Upload", "EDA", "Preprocess", "Model"])
 
 
-# ---------------- Functions ----------------
+# ---------- FUNCTIONS ----------
 
-def clean_data(df):
+def preprocess(df):
+    df = df.copy()
+
     df = df.drop_duplicates()
 
     for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = df[col].fillna(df[col].mode()[0])
+        if df[col].dtype in ['int64', 'float64']:
+            df[col] = df[col].fillna(df[col].median())
         else:
-            df[col] = df[col].fillna(df[col].mean())
+            df[col] = df[col].fillna("Missing")
+
+    for col in df.columns:
+        try:
+            df[col] = pd.to_numeric(df[col])
+        except:
+            pass
+
+    for col in df.select_dtypes(include=['object', 'string']):
+        if df[col].nunique() < 50:
+            df[col] = df[col].astype('category').cat.codes
+        else:
+            df.drop(col, axis=1, inplace=True)
 
     return df
 
 
-def remove_outliers(df):
-    numeric_cols = df.select_dtypes(include=np.number)
-
-    Q1 = numeric_cols.quantile(0.25)
-    Q3 = numeric_cols.quantile(0.75)
-    IQR = Q3 - Q1
-
-    mask = ~((numeric_cols < (Q1 - 1.5 * IQR)) |
-             (numeric_cols > (Q3 + 1.5 * IQR))).any(axis=1)
-
-    return df[mask]
+def detect_problem(y):
+    if y.dtype in ['int64', 'float64'] and y.nunique() > 20:
+        return "Regression"
+    else:
+        return "Classification"
 
 
-def drop_text_columns(X):
-    X = X.copy()
-    for col in X.columns:
-        if X[col].dtype == 'object' and X[col].nunique() > 50:
-            X = X.drop(col, axis=1)
-    return X
+def scale(X):
+    try:
+        scaler = StandardScaler()
+        X = scaler.fit_transform(X)
+        return pd.DataFrame(X)
+    except:
+        return X
 
 
-def encode_data(X):
-    X = X.copy()
-    for col in X.select_dtypes(include=['object']):
-        X[col] = LabelEncoder().fit_transform(X[col].astype(str))
-    return X
+def get_models(problem):
+    if problem == "Classification":
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.neighbors import KNeighborsClassifier
+
+        return {
+            "Random Forest": RandomForestClassifier(),
+            "KNN": KNeighborsClassifier()
+        }
+    else:
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.linear_model import LinearRegression
+
+        return {
+            "Random Forest": RandomForestRegressor(),
+            "Linear Regression": LinearRegression()
+        }
 
 
-def handle_missing(X):
-    imputer = SimpleImputer(strategy='mean')
-    X_imputed = imputer.fit_transform(X)
-    return pd.DataFrame(X_imputed, columns=X.columns)
-
-
-def scale_features(X):
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    return pd.DataFrame(X_scaled, columns=X.columns)
-
-
-def train_models(X_train, X_test, y_train, y_test):
-    models = {
-        "KNN": KNeighborsClassifier(),
-        "Random Forest": RandomForestClassifier(),
-        "Logistic Regression": LogisticRegression(max_iter=1000),
-        "SVM": SVC()
-    }
-
+def train(X_train, X_test, y_train, y_test, problem):
+    models = get_models(problem)
     results = {}
 
     for name, model in models.items():
-        model.fit(X_train, y_train)
-        preds = model.predict(X_test)
-        acc = accuracy_score(y_test, preds)
-        results[name] = acc
+        try:
+            model.fit(X_train, y_train)
+            preds = model.predict(X_test)
+
+            if problem == "Classification":
+                from sklearn.metrics import accuracy_score
+                score = accuracy_score(y_test, preds)
+            else:
+                from sklearn.metrics import r2_score
+                score = r2_score(y_test, preds)
+
+            results[name] = round(score, 3)
+
+        except:
+            results[name] = "Error"
 
     return results
 
 
-# ---------------- Upload ----------------
+# ---------- UPLOAD ----------
 
-uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+file = st.sidebar.file_uploader("Upload CSV")
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+if file:
+    df = pd.read_csv(file)
 else:
     df = None
 
 
-# ---------------- Upload Section ----------------
+# ---------- UI ----------
 
-if menu == "Upload Data":
-
-    st.header("Dataset Overview")
-
+if menu == "Upload":
     if df is not None:
         st.dataframe(df.head())
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Rows", df.shape[0])
-        col2.metric("Columns", df.shape[1])
-        col3.metric("Missing Values", df.isnull().sum().sum())
-
+        st.write("Shape:", df.shape)
     else:
-        st.info("Upload a CSV file.")
+        st.warning("Upload file")
 
 
-# ---------------- EDA ----------------
-
+# ---------- EDA ----------
 elif menu == "EDA":
-
-    st.header("Exploratory Data Analysis")
-
     if df is not None:
-        col = st.selectbox("Select column", df.columns)
+        col = st.selectbox("Column", df.columns)
 
+        # Histogram
         fig = px.histogram(df, x=col)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)
 
-        if df.select_dtypes(include=np.number).shape[1] > 1:
-            corr = df.corr(numeric_only=True)
+        # ✅ Correlation Matrix
+        num_df = df.select_dtypes(include=np.number)
+
+        if num_df.shape[1] > 1:
+            st.subheader("Correlation Matrix")
+            corr = num_df.corr()
+
             fig2 = px.imshow(corr, text_auto=True)
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2)
+        else:
+            st.info("Not enough numeric columns")
 
     else:
-        st.warning("Upload data first")
+        st.warning("Upload file")
 
 
-# ---------------- Preprocessing ----------------
-
-elif menu == "Preprocessing":
-
-    st.header("Data Preprocessing")
-
+# ---------- PREPROCESS ----------
+elif menu == "Preprocess":
     if df is not None:
-
-        if st.button("Clean Data"):
-            df = clean_data(df)
-            st.success("Missing values handled & duplicates removed")
-
-        if st.checkbox("Remove Outliers"):
-            df = remove_outliers(df)
-            st.success("Outliers removed")
+        if st.button("Run"):
+            df = preprocess(df)
+            st.success("Done")
 
         st.dataframe(df.head())
 
-        st.download_button(
-            "Download Processed Data",
-            df.to_csv(index=False),
-            file_name="processed_data.csv"
+        st.download_button("Download", df.to_csv(index=False), "clean.csv")
+    else:
+        st.warning("Upload file")
+
+
+# ---------- MODEL ----------
+elif menu == "Model":
+    if df is not None:
+        df = preprocess(df)
+
+        target = st.selectbox("Target", df.columns)
+
+        X = df.drop(target, axis=1)
+        y = df[target]
+
+        X = scale(X)
+
+        # ✅ NEW: manual + auto
+        problem_choice = st.selectbox(
+            "Select Problem Type",
+            ["Auto", "Classification", "Regression"]
         )
 
-    else:
-        st.warning("Upload data first")
+        if problem_choice == "Auto":
+            problem = detect_problem(y)
+        else:
+            problem = problem_choice
 
+        st.write("Problem Type:", problem)
 
-# ---------------- Model Training ----------------
+        X_train, X_test, y_train, y_test = train_test_split(X, y)
 
-elif menu == "Model Training":
+        if st.button("Train"):
+            res = train(X_train, X_test, y_train, y_test, problem)
 
-    st.header("Train & Compare Models")
+            st.write(res)
 
-    if df is not None:
-
-        target = st.selectbox("Select Target Column", df.columns)
-
-        if target:
-
-            X = df.drop(target, axis=1)
-            y = df[target]
-
-           
-            X = drop_text_columns(X)
-            X = encode_data(X)
-            X = handle_missing(X)  
-            X = scale_features(X)
-
-            st.write("Remaining Missing Values:", X.isnull().sum().sum())
-
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.2, random_state=42
-            )
-
-            if st.button("Train Models"):
-
-                results = train_models(X_train, X_test, y_train, y_test)
-
-                st.subheader("Model Performance")
-
-                for model, score in results.items():
-                    st.write(f"{model}: {round(score, 3)}")
-
-                best_model = max(results, key=results.get)
-                st.success(f"Best Model: {best_model}")
-
-                fig = px.bar(
-                    x=list(results.keys()),
-                    y=list(results.values()),
-                    title="Model Accuracy Comparison"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            fig = px.bar(x=list(res.keys()), y=list(res.values()))
+            st.plotly_chart(fig)
 
     else:
-        st.warning("Upload data first")
+        st.warning("Upload file")
