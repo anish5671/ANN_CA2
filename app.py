@@ -2,14 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 
 import plotly.express as px
 
 st.set_page_config(page_title="ML Pipeline", layout="wide")
-
-st.title("ML Auto Pipeline")
+st.title("🚀 ML Auto Pipeline")
 
 menu = st.sidebar.radio("Menu", ["Upload", "EDA", "Preprocess", "Model"])
 
@@ -18,7 +17,6 @@ menu = st.sidebar.radio("Menu", ["Upload", "EDA", "Preprocess", "Model"])
 
 def preprocess(df):
     df = df.copy()
-
     df = df.drop_duplicates()
 
     for col in df.columns:
@@ -77,30 +75,6 @@ def get_models(problem):
         }
 
 
-def train(X_train, X_test, y_train, y_test, problem):
-    models = get_models(problem)
-    results = {}
-
-    for name, model in models.items():
-        try:
-            model.fit(X_train, y_train)
-            preds = model.predict(X_test)
-
-            if problem == "Classification":
-                from sklearn.metrics import accuracy_score
-                score = accuracy_score(y_test, preds)
-            else:
-                from sklearn.metrics import r2_score
-                score = r2_score(y_test, preds)
-
-            results[name] = round(score, 3)
-
-        except:
-            results[name] = "Error"
-
-    return results
-
-
 # ---------- UPLOAD ----------
 
 file = st.sidebar.file_uploader("Upload CSV")
@@ -113,6 +87,7 @@ else:
 
 # ---------- UI ----------
 
+# UPLOAD
 if menu == "Upload":
     if df is not None:
         st.dataframe(df.head())
@@ -121,22 +96,19 @@ if menu == "Upload":
         st.warning("Upload file")
 
 
-# ---------- EDA ----------
+# EDA
 elif menu == "EDA":
     if df is not None:
         col = st.selectbox("Column", df.columns)
 
-        # Histogram
         fig = px.histogram(df, x=col)
         st.plotly_chart(fig)
 
-        # ✅ Correlation Matrix
         num_df = df.select_dtypes(include=np.number)
 
         if num_df.shape[1] > 1:
             st.subheader("Correlation Matrix")
             corr = num_df.corr()
-
             fig2 = px.imshow(corr, text_auto=True)
             st.plotly_chart(fig2)
         else:
@@ -146,53 +118,86 @@ elif menu == "EDA":
         st.warning("Upload file")
 
 
-# ---------- PREPROCESS ----------
+# PREPROCESS
 elif menu == "Preprocess":
     if df is not None:
-        if st.button("Run"):
+        if st.button("Run Preprocessing"):
             df = preprocess(df)
-            st.success("Done")
+            st.success("Preprocessing Done")
 
         st.dataframe(df.head())
+        st.download_button("Download Clean Data", df.to_csv(index=False), "clean.csv")
 
-        st.download_button("Download", df.to_csv(index=False), "clean.csv")
     else:
         st.warning("Upload file")
 
 
-# ---------- MODEL ----------
+# MODEL
 elif menu == "Model":
     if df is not None:
         df = preprocess(df)
 
-        target = st.selectbox("Target", df.columns)
+        target = st.selectbox("Target Column", df.columns)
 
         X = df.drop(target, axis=1)
         y = df[target]
 
+        # ---------- FEATURE SELECTION (FIXED) ----------
+        temp_df = df.copy()
+
+        if temp_df[target].dtype == "object":
+            temp_df[target] = LabelEncoder().fit_transform(temp_df[target].astype(str))
+
+        for col in temp_df.columns:
+            try:
+                temp_df[col] = pd.to_numeric(temp_df[col])
+            except:
+                temp_df[col] = LabelEncoder().fit_transform(temp_df[col].astype(str))
+
+        corr = temp_df.corr()
+
+        if target in corr.columns:
+            top_features = corr[target].abs().sort_values(ascending=False).index[1:6]
+            if len(top_features) == 0:
+                top_features = X.columns[:5]
+        else:
+            top_features = X.columns[:5]
+
+        X = X[top_features]
+
+        st.write("Selected Features:", list(top_features))
+
+        # ---------- SCALING ----------
         X = scale(X)
 
-        # ✅ NEW: manual + auto
-        problem_choice = st.selectbox(
-            "Select Problem Type",
-            ["Auto", "Classification", "Regression"]
-        )
+        # ---------- PROBLEM TYPE ----------
+        choice = st.selectbox("Problem Type", ["Auto", "Classification", "Regression"])
 
-        if problem_choice == "Auto":
+        if choice == "Auto":
             problem = detect_problem(y)
         else:
-            problem = problem_choice
+            problem = choice
 
-        st.write("Problem Type:", problem)
+        st.write("Problem:", problem)
+
+        models = get_models(problem)
 
         X_train, X_test, y_train, y_test = train_test_split(X, y)
 
-        if st.button("Train"):
-            res = train(X_train, X_test, y_train, y_test, problem)
+        # ---------- TRAIN ----------
+        if st.button("Train Models"):
+            results = {}
 
-            st.write(res)
+            for name, model in models.items():
+                try:
+                    scores = cross_val_score(model, X, y, cv=5)
+                    results[name] = round(scores.mean(), 3)
+                except:
+                    results[name] = "Error"
 
-            fig = px.bar(x=list(res.keys()), y=list(res.values()))
+            st.write(results)
+
+            fig = px.bar(x=list(results.keys()), y=list(results.values()))
             st.plotly_chart(fig)
 
     else:
