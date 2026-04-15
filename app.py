@@ -10,51 +10,28 @@ import plotly.express as px
 st.set_page_config(page_title="ML Pipeline", layout="wide")
 st.title("🚀 ML Auto Pipeline")
 
-menu = st.sidebar.radio("Menu", ["Upload", "EDA", "Preprocess", "Model", "Predict"])
-
-
-# ---------- SESSION ----------
-if "model" not in st.session_state:
-    st.session_state.model = None
-
-if "features" not in st.session_state:
-    st.session_state.features = None
-
-if "target" not in st.session_state:
-    st.session_state.target = None
+menu = st.sidebar.radio("Menu", ["Upload", "EDA", "Preprocess", "Model"])
 
 
 # ---------- FUNCTIONS ----------
 
-def preprocess(df, target_col=None):
+def preprocess(df):
     df = df.copy()
     df = df.drop_duplicates()
 
-    # CLEAN ₹ and commas
-    for col in df.columns:
-        if df[col].dtype == "object":
-            df[col] = df[col].astype(str).str.replace(",", "", regex=False)
-            df[col] = df[col].str.replace("₹", "", regex=False)
-
-    # Fill missing values
     for col in df.columns:
         if df[col].dtype in ['int64', 'float64']:
             df[col] = df[col].fillna(df[col].median())
         else:
             df[col] = df[col].fillna("Missing")
 
-    # Convert numeric-like
     for col in df.columns:
         try:
             df[col] = pd.to_numeric(df[col])
         except:
             pass
 
-    # Handle categorical (DO NOT DROP TARGET)
     for col in df.select_dtypes(include=['object', 'string']):
-        if col == target_col:
-            continue
-
         if df[col].nunique() < 50:
             df[col] = df[col].astype('category').cat.codes
         else:
@@ -99,6 +76,7 @@ def get_models(problem):
 
 
 # ---------- UPLOAD ----------
+
 file = st.sidebar.file_uploader("Upload CSV")
 
 if file:
@@ -107,7 +85,9 @@ else:
     df = None
 
 
-# ---------- UPLOAD ----------
+# ---------- UI ----------
+
+# UPLOAD
 if menu == "Upload":
     if df is not None:
         st.dataframe(df.head())
@@ -116,7 +96,7 @@ if menu == "Upload":
         st.warning("Upload file")
 
 
-# ---------- EDA ----------
+# EDA
 elif menu == "EDA":
     if df is not None:
         col = st.selectbox("Column", df.columns)
@@ -131,49 +111,38 @@ elif menu == "EDA":
             corr = num_df.corr()
             fig2 = px.imshow(corr, text_auto=True)
             st.plotly_chart(fig2)
+        else:
+            st.info("Not enough numeric columns")
+
     else:
         st.warning("Upload file")
 
 
-# ---------- PREPROCESS ----------
+# PREPROCESS
 elif menu == "Preprocess":
     if df is not None:
-        target = st.selectbox("Select Target (optional)", ["None"] + list(df.columns))
-
-        if target == "None":
-            target = None
-
         if st.button("Run Preprocessing"):
-            df_clean = preprocess(df, target)
+            df = preprocess(df)
             st.success("Preprocessing Done")
-            st.dataframe(df_clean.head())
-            st.download_button("Download Clean Data", df_clean.to_csv(index=False), "clean.csv")
-        else:
-            st.dataframe(df.head())
+
+        st.dataframe(df.head())
+        st.download_button("Download Clean Data", df.to_csv(index=False), "clean.csv")
 
     else:
         st.warning("Upload file")
 
 
-# ---------- MODEL ----------
+# MODEL
 elif menu == "Model":
     if df is not None:
+        df = preprocess(df)
 
-        # SMART TARGET SUGGESTION
-        possible_targets = [col for col in df.columns if col.lower() in ["price", "salary", "amount", "target"]]
-        default_target = possible_targets[0] if possible_targets else df.columns[-1]
+        target = st.selectbox("Target Column", df.columns)
 
-        target = st.selectbox("Select Target Column", df.columns, index=df.columns.get_loc(default_target))
-
-        # SAVE TARGET
-        st.session_state.target = target
-
-        df = preprocess(df, target)
-
-        X = df.drop(columns=[target], errors="ignore")
+        X = df.drop(target, axis=1)
         y = df[target]
 
-        # ---------- FEATURE SELECTION ----------
+        # ---------- FEATURE SELECTION (FIXED) ----------
         temp_df = df.copy()
 
         if temp_df[target].dtype == "object":
@@ -189,34 +158,40 @@ elif menu == "Model":
 
         if target in corr.columns:
             top_features = corr[target].abs().sort_values(ascending=False).index[1:6]
+            if len(top_features) == 0:
+                top_features = X.columns[:5]
         else:
             top_features = X.columns[:5]
 
         X = X[top_features]
 
-        # SAVE FEATURES
-        st.session_state.features = list(top_features)
-
         st.write("Selected Features:", list(top_features))
 
+        # ---------- SCALING ----------
         X = scale(X)
 
+        # ---------- PROBLEM TYPE ----------
         choice = st.selectbox("Problem Type", ["Auto", "Classification", "Regression"])
-        problem = detect_problem(y) if choice == "Auto" else choice
+
+        if choice == "Auto":
+            problem = detect_problem(y)
+        else:
+            problem = choice
+
+        st.write("Problem:", problem)
 
         models = get_models(problem)
 
+        X_train, X_test, y_train, y_test = train_test_split(X, y)
+
+        # ---------- TRAIN ----------
         if st.button("Train Models"):
             results = {}
-            trained_models = {}
 
             for name, model in models.items():
                 try:
                     scores = cross_val_score(model, X, y, cv=5)
-                    model.fit(X, y)
-
                     results[name] = round(scores.mean(), 3)
-                    trained_models[name] = model
                 except:
                     results[name] = "Error"
 
@@ -225,45 +200,5 @@ elif menu == "Model":
             fig = px.bar(x=list(results.keys()), y=list(results.values()))
             st.plotly_chart(fig)
 
-            best_model_name = max(results, key=lambda k: results[k] if results[k] != "Error" else -1)
-            best_model = trained_models.get(best_model_name)
-
-            st.success(f"Best Model: {best_model_name}")
-
-            st.session_state.model = best_model
-
     else:
         st.warning("Upload file")
-
-
-# ---------- PREDICT ----------
-elif menu == "Predict":
-    st.subheader("🔮 Prediction Panel")
-
-    if st.session_state.model is None:
-        st.warning("Train model first")
-    else:
-        st.write(f"Predicting for: {st.session_state.target}")
-
-        input_data = {}
-
-        for col in st.session_state.features:
-            val = st.text_input(f"Enter {col}")
-            input_data[col] = val
-
-        if st.button("Predict"):
-            try:
-                input_df = pd.DataFrame([input_data])
-
-                for col in input_df.columns:
-                    try:
-                        input_df[col] = pd.to_numeric(input_df[col])
-                    except:
-                        input_df[col] = 0
-
-                prediction = st.session_state.model.predict(input_df)[0]
-
-                st.success(f"Prediction: {prediction}")
-
-            except Exception as e:
-                st.error(e)
