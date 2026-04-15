@@ -118,12 +118,6 @@ def get_models(problem):
 
 
 def smart_convert_input(val):
-    """
-    Convert user input smartly:
-    - TRUE/FALSE → 1/0
-    - Numeric string → float
-    - Else → 0
-    """
     val_str = str(val).strip().upper()
 
     if val_str in ["TRUE", "YES"]:
@@ -218,10 +212,10 @@ elif menu == "Model":
 
         df_processed = preprocess(df, target)
 
-        X = df_processed.drop(columns=[target], errors="ignore")
+        X_all = df_processed.drop(columns=[target], errors="ignore")
         y = df_processed[target]
 
-        # ---------- FEATURE SELECTION ----------
+        # ---------- FEATURE SELECTION (MANUAL with smart defaults) ----------
         temp_df = df_processed.copy()
 
         if temp_df[target].dtype == "object":
@@ -235,18 +229,43 @@ elif menu == "Model":
 
         corr = temp_df.corr()
 
+        # Compute top 5 by correlation as default suggestion
         if target in corr.columns:
-            top_features = corr[target].abs().sort_values(ascending=False).index[1:6]
+            top_5_default = list(corr[target].abs().sort_values(ascending=False).index[1:6])
         else:
-            top_features = X.columns[:5]
+            top_5_default = list(X_all.columns[:5])
 
-        X = X[top_features]
+        # Keep only valid columns that exist in X_all
+        top_5_default = [f for f in top_5_default if f in X_all.columns]
+
+        st.subheader("🎯 Feature Selection")
+
+        # Show correlation table for reference
+        if target in corr.columns:
+            corr_series = corr[target].abs().drop(labels=[target], errors="ignore").sort_values(ascending=False)
+            with st.expander("📊 Feature Correlation with Target (for reference)"):
+                corr_df = corr_series.reset_index()
+                corr_df.columns = ["Feature", "Correlation (abs)"]
+                corr_df["Correlation (abs)"] = corr_df["Correlation (abs)"].round(4)
+                st.dataframe(corr_df, use_container_width=True)
+
+        # Manual multiselect — default = top 5 by correlation
+        selected_features = st.multiselect(
+            "Select Features for Training (default = top 5 by correlation)",
+            options=list(X_all.columns),
+            default=top_5_default,
+            help="You can add/remove features manually. Default selection is top 5 most correlated with target."
+        )
+
+        if len(selected_features) == 0:
+            st.warning("⚠️ Please select at least 1 feature.")
+            st.stop()
 
         # SAVE FEATURES
-        st.session_state.features = list(top_features)
+        st.session_state.features = selected_features
+        st.info(f"✅ Using {len(selected_features)} features: {selected_features}")
 
-        st.write("Selected Features:", list(top_features))
-
+        X = X_all[selected_features]
         X = scale(X)
 
         choice = st.selectbox("Problem Type", ["Auto", "Classification", "Regression"])
@@ -296,7 +315,6 @@ elif menu == "Predict":
         input_data = {}
 
         for col in st.session_state.features:
-            # Show helpful hint for boolean columns
             if col in st.session_state.bool_cols:
                 val = st.text_input(f"Enter {col}", placeholder="TRUE or FALSE")
             else:
@@ -307,11 +325,9 @@ elif menu == "Predict":
             try:
                 input_df = pd.DataFrame([input_data])
 
-                # ✅ FIX: Smart conversion — handles TRUE/FALSE, numbers, unknowns
                 for col in input_df.columns:
                     input_df[col] = smart_convert_input(input_df[col].iloc[0])
 
-                # ✅ Apply same scaler used during training
                 if st.session_state.scaler is not None:
                     try:
                         input_scaled = st.session_state.scaler.transform(input_df)
@@ -321,7 +337,6 @@ elif menu == "Predict":
 
                 prediction = st.session_state.model.predict(input_df)[0]
 
-                # Show result nicely
                 if isinstance(prediction, float):
                     st.success(f"Prediction: {prediction:,.2f}")
                 else:
